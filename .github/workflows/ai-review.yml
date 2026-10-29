@@ -9,6 +9,10 @@ on:
         description: Gemini 模型名稱（額度不足可改 gemini-3.5-flash-lite）
         type: string
         default: gemini-3.8-flash
+      fallback-model:
+        description: 主模型重試仍失敗時改用的模型（空字串表示不備援）
+        type: string
+        default: gemini-3.5-flash-lite
       max-diff-chars:
         description: 送審差異的最大字元數，超過會截斷
         type: number
@@ -30,7 +34,7 @@ jobs:
   review:
     if: github.event.pull_request.draft == false && github.event.pull_request.base.ref == inputs.base-branch
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: 取得審查 prompt 與腳本（中央 repo）
         uses: actions/checkout@v7
@@ -55,6 +59,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           MODEL: ${{ inputs.model }}
+          FALLBACK_MODEL: ${{ inputs.fallback-model }}
           MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}

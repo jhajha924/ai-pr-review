@@ -1,7 +1,7 @@
 """呼叫 Gemini API（OpenAI 相容介面）審查 PR 差異，輸出審查內容檔與判定結果。
 
 所有輸入都從環境變數讀取（PR 標題、說明不經 shell 展開，避免指令注入）：
-  MODEL, MAX_DIFF_CHARS, PROMPT_FILE, DIFF_FILE, FILES_FILE, OUT_BODY,
+  MODEL, FALLBACK_MODEL, RETRY_WAIT, MAX_DIFF_CHARS, PROMPT_FILE, DIFF_FILE, FILES_FILE, OUT_BODY,
   PR_TITLE, PR_BODY, GEMINI_API_KEY, RUN_URL, GITHUB_OUTPUT, MODELS_API_URL（測試用）
 
 判定（寫入 GITHUB_OUTPUT 的 verdict）：
@@ -13,6 +13,7 @@
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 
@@ -21,6 +22,7 @@ API_URL = os.environ.get(
     "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
 )
 VERDICTS = ("REQUIRED_CHANGES", "PASS")
+RETRY_CODES = (429, 500, 502, 503, 504)
 RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
@@ -76,7 +78,7 @@ def call_model(model, system_prompt, user_content):
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=180) as resp:
+    with urllib.request.urlopen(req, timeout=120) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
     try:
         return json.loads(raw)["choices"][0]["message"]["content"]
@@ -84,14 +86,38 @@ def call_model(model, system_prompt, user_content):
         raise RuntimeError(f"API 回應無法解析：{raw[:300]!r}")
 
 
-def main():
-    model = os.environ.get("MODEL", "gemini-3.8-flash")
-    max_chars = int(os.environ.get("MAX_DIFF_CHARS", "16000"))
-    run_url = os.environ.get("RUN_URL", "")
-    header = (
+def call_with_retry(models, system_prompt, user_content, wait):
+    """依序嘗試 models；遇到忙碌、額度或逾時錯誤就換下一個，回傳 (使用的模型, 內容)。"""
+    last_error = None
+    for i, model in enumerate(models):
+        if i:
+            time.sleep(wait)
+        try:
+            return model, call_model(model, system_prompt, user_content)
+        except urllib.error.HTTPError as e:
+            if e.code not in RETRY_CODES:
+                raise
+            last_error = e
+        except (TimeoutError, urllib.error.URLError) as e:
+            last_error = e
+        print(f"::warning::{model} 失敗（{last_error}），改試下一個")
+    raise last_error
+
+
+def make_header(model):
+    return (
         f"## 🤖 AI 審查（Gemini／{model}）\n"
         "> AI 意見僅供參考，是否合併由人決定。\n\n"
     )
+
+
+def main():
+    model = os.environ.get("MODEL", "gemini-3.8-flash")
+    fallback = os.environ.get("FALLBACK_MODEL", "gemini-3.5-flash-lite")
+    wait = float(os.environ.get("RETRY_WAIT", "15"))
+    max_chars = int(os.environ.get("MAX_DIFF_CHARS", "16000"))
+    run_url = os.environ.get("RUN_URL", "")
+    header = make_header(model)
 
     diff = read(os.environ["DIFF_FILE"])
     if not diff.strip():
@@ -119,7 +145,11 @@ def main():
     )
 
     try:
-        content = call_model(model, read(os.environ["PROMPT_FILE"]), user_content)
+        models = [model, model] + ([fallback] if fallback and fallback != model else [])
+        used, content = call_with_retry(
+            models, read(os.environ["PROMPT_FILE"]), user_content, wait
+        )
+        header = make_header(used)
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")[:500]
         write_output(
