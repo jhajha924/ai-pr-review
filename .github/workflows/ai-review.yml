@@ -73,6 +73,12 @@ jobs:
           VERDICT: ${{ steps.ai.outputs.verdict }}
           BODY_FILE: ${{ runner.temp }}/body.md
         run: |
+          # 撤銷機器人先前的 request-changes，讓 PR 只保留最新一次 AI 判定
+          for id in $(gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
+              --jq '.[] | select(.user.login == "github-actions[bot]" and .state == "CHANGES_REQUESTED") | .id'); do
+            gh api -X PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \
+              -f message="已由新的 AI 審查取代" -f event=DISMISS > /dev/null
+          done
           if [ "$VERDICT" = "REQUIRED_CHANGES" ]; then
             gh pr review "$PR" --repo "$REPO" --request-changes --body-file "$BODY_FILE" || {
               echo "::warning::無法發出 request-changes，改用一般留言"
