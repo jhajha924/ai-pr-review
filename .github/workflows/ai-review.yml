@@ -6,13 +6,13 @@ on:
   workflow_call:
     inputs:
       model:
-        description: Gemini 模型名稱（額度不足可改 gemini-3.5-flash-lite）
+        description: Gemini 主模型名稱（實測免費版回應最快）
         type: string
-        default: gemini-3.8-flash
+        default: gemini-3.5-flash-lite
       fallback-model:
         description: 主模型重試仍失敗時改用的模型（空字串表示不備援）
         type: string
-        default: gemini-3.5-flash-lite
+        default: gemini-3.8-flash
       max-diff-chars:
         description: 送審差異的最大字元數，超過會截斷
         type: number
