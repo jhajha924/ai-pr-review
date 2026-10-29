@@ -6,9 +6,9 @@ on:
   workflow_call:
     inputs:
       model:
-        description: GitHub Models 的模型名稱
+        description: Gemini 模型名稱（額度不足可改 gemini-3.5-flash-lite）
         type: string
-        default: openai/gpt-4.1
+        default: gemini-3.8-flash
       max-diff-chars:
         description: 送審差異的最大字元數，超過會截斷
         type: number
@@ -21,6 +21,10 @@ on:
         description: 讀取本中央 repo 的哪個版本（標籤或分支）
         type: string
         default: v1
+    secrets:
+      GEMINI_API_KEY:
+        description: Google AI Studio 建立的 Gemini API 金鑰（未設定時只留言提示）
+        required: false
 
 jobs:
   review:
@@ -46,10 +50,10 @@ jobs:
           gh pr diff "$PR" --repo "$REPO" --name-only > "$RUNNER_TEMP/files.txt"
           echo "差異字元數（位元組）：$(wc -c < "$RUNNER_TEMP/diff.txt")"
 
-      - name: 呼叫 GitHub Models 審查
+      - name: 呼叫 Gemini API 審查
         id: ai
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           MODEL: ${{ inputs.model }}
           MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
           PR_TITLE: ${{ github.event.pull_request.title }}

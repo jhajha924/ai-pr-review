@@ -1,13 +1,13 @@
-"""呼叫 GitHub Models 審查 PR 差異，輸出審查內容檔與判定結果。
+"""呼叫 Gemini API（OpenAI 相容介面）審查 PR 差異，輸出審查內容檔與判定結果。
 
 所有輸入都從環境變數讀取（PR 標題、說明不經 shell 展開，避免指令注入）：
   MODEL, MAX_DIFF_CHARS, PROMPT_FILE, DIFF_FILE, FILES_FILE, OUT_BODY,
-  PR_TITLE, PR_BODY, GITHUB_TOKEN, RUN_URL, GITHUB_OUTPUT, MODELS_API_URL（測試用）
+  PR_TITLE, PR_BODY, GEMINI_API_KEY, RUN_URL, GITHUB_OUTPUT, MODELS_API_URL（測試用）
 
 判定（寫入 GITHUB_OUTPUT 的 verdict）：
   REQUIRED_CHANGES／PASS：AI 正常回覆
   EMPTY：沒有程式差異，不呼叫 AI
-  ERROR：呼叫 GitHub Models 失敗
+  ERROR：未設定金鑰或呼叫 Gemini API 失敗
   BADJSON：AI 回覆不是約定的 JSON
 """
 
@@ -17,9 +17,18 @@ import urllib.error
 import urllib.request
 
 API_URL = os.environ.get(
-    "MODELS_API_URL", "https://models.github.ai/inference/chat/completions"
+    "MODELS_API_URL",
+    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
 )
 VERDICTS = ("REQUIRED_CHANGES", "PASS")
+RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": list(VERDICTS)},
+        "body": {"type": "string"},
+    },
+    "required": ["verdict", "body"],
+}
 
 
 def read(path):
@@ -35,11 +44,23 @@ def write_output(verdict, body):
     print(f"verdict={verdict}")
 
 
+def strip_fence(text):
+    """模型偶爾會把 JSON 包在 ``` 程式碼框裡，去掉後再解析。"""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        text = text.rsplit("```", 1)[0]
+    return text.strip()
+
+
 def call_model(model, system_prompt, user_content):
     payload = {
         "model": model,
         "temperature": 0.2,
-        "response_format": {"type": "json_object"},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "review", "schema": RESPONSE_SCHEMA},
+        },
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
@@ -49,7 +70,7 @@ def call_model(model, system_prompt, user_content):
         API_URL,
         data=json.dumps(payload).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
+            "Authorization": f"Bearer {os.environ['GEMINI_API_KEY']}",
             "Content-Type": "application/json",
             "Accept": "application/json",
         },
@@ -64,17 +85,26 @@ def call_model(model, system_prompt, user_content):
 
 
 def main():
-    model = os.environ.get("MODEL", "openai/gpt-4.1")
+    model = os.environ.get("MODEL", "gemini-3.8-flash")
     max_chars = int(os.environ.get("MAX_DIFF_CHARS", "16000"))
     run_url = os.environ.get("RUN_URL", "")
     header = (
-        f"## 🤖 AI 審查（GitHub Models／{model}）\n"
+        f"## 🤖 AI 審查（Gemini／{model}）\n"
         "> AI 意見僅供參考，是否合併由人決定。\n\n"
     )
 
     diff = read(os.environ["DIFF_FILE"])
     if not diff.strip():
         write_output("EMPTY", header + "這個 PR 沒有程式差異，未執行 AI 審查。")
+        return
+
+    if not os.environ.get("GEMINI_API_KEY"):
+        write_output(
+            "ERROR",
+            header
+            + "⚠️ 尚未設定 Secret `GEMINI_API_KEY`，無法執行 AI 審查。\n\n"
+            + "請在終端機執行：`gh secret set GEMINI_API_KEY -R <帳號>/<repo>`",
+        )
         return
 
     truncated = len(diff) > max_chars
@@ -99,7 +129,7 @@ def main():
             + f"```\n{detail}\n```\n\n執行紀錄：{run_url}",
         )
         return
-    except Exception as e:  # 逾時、連線失敗等
+    except Exception as e:  # 逾時、連線失敗、回應無法解析等
         write_output(
             "ERROR",
             header
@@ -109,7 +139,7 @@ def main():
         return
 
     try:
-        result = json.loads(content)
+        result = json.loads(strip_fence(content))
         verdict = result["verdict"]
         body = result["body"]
         if verdict not in VERDICTS or not isinstance(body, str):
