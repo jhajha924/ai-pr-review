@@ -1,0 +1,85 @@
+# 共用 PR AI 審查 workflow：由各專案的呼叫檔以 uses: 引用
+# 安全原則：只 checkout 本中央 repo（取 prompt 與腳本），絕不 checkout 或執行 PR 的程式碼
+name: AI PR Review (shared)
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: GitHub Models 的模型名稱
+        type: string
+        default: openai/gpt-4.1
+      max-diff-chars:
+        description: 送審差異的最大字元數，超過會截斷
+        type: number
+        default: 16000
+      base-branch:
+        description: 只審查合併目標為此分支的 PR
+        type: string
+        default: main
+      prompt-ref:
+        description: 讀取本中央 repo 的哪個版本（標籤或分支）
+        type: string
+        default: v1
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false && github.event.pull_request.base.ref == inputs.base-branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 取得審查 prompt 與腳本（中央 repo）
+        uses: actions/checkout@v4
+        with:
+          repository: jhajha924/ai-pr-review
+          ref: ${{ inputs.prompt-ref }}
+          path: .ai-review
+          persist-credentials: false
+
+      - name: 取得 PR 差異（只讀文字，不執行 PR 程式碼）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr diff "$PR" --repo "$REPO" > "$RUNNER_TEMP/diff.txt"
+          gh pr diff "$PR" --repo "$REPO" --name-only > "$RUNNER_TEMP/files.txt"
+          echo "差異字元數（位元組）：$(wc -c < "$RUNNER_TEMP/diff.txt")"
+
+      - name: 呼叫 GitHub Models 審查
+        id: ai
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MODEL: ${{ inputs.model }}
+          MAX_DIFF_CHARS: ${{ inputs.max-diff-chars }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PROMPT_FILE: .ai-review/prompts/review-prompt.md
+          DIFF_FILE: ${{ runner.temp }}/diff.txt
+          FILES_FILE: ${{ runner.temp }}/files.txt
+          OUT_BODY: ${{ runner.temp }}/body.md
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python3 .ai-review/scripts/review.py
+
+      - name: 回寫審查結果到 PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          VERDICT: ${{ steps.ai.outputs.verdict }}
+          BODY_FILE: ${{ runner.temp }}/body.md
+        run: |
+          if [ "$VERDICT" = "REQUIRED_CHANGES" ]; then
+            gh pr review "$PR" --repo "$REPO" --request-changes --body-file "$BODY_FILE" || {
+              echo "::warning::無法發出 request-changes，改用一般留言"
+              gh pr comment "$PR" --repo "$REPO" --body-file "$BODY_FILE"
+            }
+          else
+            gh pr comment "$PR" --repo "$REPO" --body-file "$BODY_FILE"
+          fi
+
+      - name: 審查異常時標記失敗（不影響合併）
+        if: steps.ai.outputs.verdict == 'ERROR' || steps.ai.outputs.verdict == 'BADJSON'
+        run: |
+          echo "::error::AI 審查異常（${{ steps.ai.outputs.verdict }}），詳見 PR 留言"
+          exit 1
