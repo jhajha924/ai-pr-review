@@ -115,7 +115,7 @@ def main():
     model = os.environ.get("MODEL", "gemini-3.8-flash")
     fallback = os.environ.get("FALLBACK_MODEL", "gemini-3.5-flash-lite")
     wait = float(os.environ.get("RETRY_WAIT", "15"))
-    max_chars = int(os.environ.get("MAX_DIFF_CHARS", "16000"))
+    max_chars = int(os.environ.get("MAX_DIFF_CHARS", "40000"))
     run_url = os.environ.get("RUN_URL", "")
     header = make_header(model)
 

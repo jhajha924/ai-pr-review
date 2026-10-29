@@ -16,7 +16,7 @@ on:
       max-diff-chars:
         description: 送審差異的最大字元數，超過會截斷
         type: number
-        default: 16000
+        default: 40000
       base-branch:
         description: 只審查合併目標為此分支的 PR
         type: string
