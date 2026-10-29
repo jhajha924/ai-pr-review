@@ -56,8 +56,11 @@ def call_model(model, system_prompt, user_content):
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=180) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return data["choices"][0]["message"]["content"]
+        raw = resp.read().decode("utf-8", errors="replace")
+    try:
+        return json.loads(raw)["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise RuntimeError(f"API 回應無法解析：{raw[:300]!r}")
 
 
 def main():
@@ -99,7 +102,9 @@ def main():
     except Exception as e:  # 逾時、連線失敗等
         write_output(
             "ERROR",
-            header + f"⚠️ AI 審查暫時無法執行（{type(e).__name__}）。\n\n執行紀錄：{run_url}",
+            header
+            + f"⚠️ AI 審查暫時無法執行（{type(e).__name__}）。\n\n"
+            + f"```\n{str(e)[:500]}\n```\n\n執行紀錄：{run_url}",
         )
         return
 
